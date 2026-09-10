@@ -1,0 +1,8 @@
+# Local Terraform state and provider directory
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Sensitive credentials and SSH keys
+terraform.tfvars
+*.pem
