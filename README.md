@@ -7,25 +7,24 @@ This project demonstrates an end-to-end Infrastructure as Code (IaC) and configu
 ## 🏗️ Architecture Overview
 
 ```mermaid
-graph TD
-    User([Admin / Local Machine])
+flowchart TD
+    User["Admin / Local Machine"]
 
-    subgraph AWS VPC
-        subgraph Security Group [ec2-t3small-key-sg]
-            direction TB
-            EC2_1["EC2 Instance 1<br/>(t3.small / Amazon Linux 2023)"]
-            EC2_2["EC2 Instance 2<br/>(t3.small / Amazon Linux 2023)"]
-            EC2_3["EC2 Instance 3<br/>(t3.small / Amazon Linux 2023)"]
+    subgraph VPC ["AWS VPC"]
+        subgraph SG ["Security Group: ec2-t3small-key-sg"]
+            EC2_1["EC2 Instance 1<br/>t3.small - Amazon Linux 2023"]
+            EC2_2["EC2 Instance 2<br/>t3.small - Amazon Linux 2023"]
+            EC2_3["EC2 Instance 3<br/>t3.small - Amazon Linux 2023"]
         end
     end
 
-    User -->|SSH Port 22 / ICMP Ping| EC2_1
-    User -->|SSH Port 22 / ICMP Ping| EC2_2
-    User -->|SSH Port 22 / ICMP Ping| EC2_3
+    User -->|"SSH (Port 22) / ICMP Ping"| EC2_1
+    User -->|"SSH (Port 22) / ICMP Ping"| EC2_2
+    User -->|"SSH (Port 22) / ICMP Ping"| EC2_3
 
-    EC2_1 <-->|Internal All-Traffic / ICMP (self=true)| EC2_2
-    EC2_2 <-->|Internal All-Traffic / ICMP (self=true)| EC2_3
-    EC2_1 <-->|Internal All-Traffic / ICMP (self=true)| EC2_3
+    EC2_1 <-->|"Internal Traffic / ICMP"| EC2_2
+    EC2_2 <-->|"Internal Traffic / ICMP"| EC2_3
+    EC2_1 <-->|"Internal Traffic / ICMP"| EC2_3
 ```
 
 ---
