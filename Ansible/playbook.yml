@@ -5,3 +5,34 @@
       dnf:
         name: "*"
         state: latest
+
+
+    - name: Download and install K3s
+      shell: curl -sfL https://get.k3s.io | sh -
+      args:
+        creates: /usr/local/bin/k3s
+
+    - name: Ensure K3s service is started and enabled
+      systemd:
+        name: k3s
+        state: started
+        enabled: yes
+
+    - name: Wait for K3s kubeconfig to be generated
+      wait_for:
+        path: /etc/rancher/k3s/k3s.yaml
+        timeout: 30
+
+    - name: Ensure readable permissions on kubeconfig
+      file:
+        path: /etc/rancher/k3s/k3s.yaml
+        mode: '0644'
+
+    - name: Verify K3s installation
+      command: k3s --version
+      register: k3s_version
+      changed_when: false
+
+    - name: Display K3s version
+      debug:
+        var: k3s_version.stdout
