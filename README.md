@@ -211,18 +211,22 @@ ping <ANOTHER_INSTANCE_PRIVATE_IP>
 
 ### 3. Run Ansible
 
-Move into the `Ansible/` directory and test ping across all managed instances:
+Move into the `Ansible/` directory to run commands using the configured `ansible.cfg` and `inventory.ini`:
 
 ```bash
 cd Ansible
+```
 
+#### Connectivity & Verification
+Test ping across all managed instances:
+```bash
 # Test connectivity to all webservers
 ansible webservers -m ping
 ```
 
 Expected output:
 ```text
-13.50.241.208 | SUCCESS => {
+13.63.20.236 | SUCCESS => {
     "ansible_facts": {
         "discovered_interpreter_python": "/usr/bin/python3.9"
     },
@@ -232,8 +236,93 @@ Expected output:
 ...
 ```
 
-Run a playbook against the cluster:
+---
+
+#### 💡 Essential Ansible Ad-Hoc CLI Commands
+
+Ad-hoc commands allow quick one-liner actions across all target nodes without creating a dedicated playbook.
+
+> [!TIP]
+> Use `-b` (or `--become`) to execute commands with `sudo` privileges when making system-level changes (e.g. package installation, service controls).
+
+##### 📦 Package Management (`dnf`)
 ```bash
+# Refresh / update package repository cache
+ansible webservers -b -m dnf -a "update_cache=yes"
+
+# Upgrade all installed packages to their latest versions
+ansible webservers -b -m dnf -a "name=* state=latest"
+
+# Install a package (e.g., git or nginx)
+ansible webservers -b -m dnf -a "name=git state=present"
+
+# Remove an unwanted package
+ansible webservers -b -m dnf -a "name=git state=absent"
+```
+
+##### 🖥️ System Health & Command Execution
+```bash
+# Check system uptime across instances (default module is command)
+ansible webservers -a "uptime"
+
+# Check available disk space
+ansible webservers -a "df -h"
+
+# Check memory usage
+ansible webservers -a "free -m"
+
+# Execute commands requiring pipes or shell redirection using the shell module
+ansible webservers -m shell -a "uname -r && cat /etc/os-release | grep PRETTY_NAME"
+```
+
+##### ⚙️ Service Management (`service` / `systemd`)
+```bash
+# Start and enable a service on boot
+ansible webservers -b -m service -a "name=nginx state=started enabled=yes"
+
+# Restart a service
+ansible webservers -b -m service -a "name=nginx state=restarted"
+
+# Stop a service
+ansible webservers -b -m service -a "name=nginx state=stopped"
+```
+
+##### 🔍 System Facts & Hardware Discovery (`setup`)
+```bash
+# Gather all system facts and environment variables
+ansible webservers -m setup
+
+# Filter for distribution information
+ansible webservers -m setup -a "filter=ansible_distribution*"
+
+# Filter for network IP information
+ansible webservers -m setup -a "filter=ansible_default_ipv4"
+```
+
+##### 📁 Files & Directories (`file`, `copy`)
+```bash
+# Create a new directory
+ansible webservers -m file -a "path=/home/ec2-user/app state=directory mode='0755'"
+
+# Copy a local file to all remote servers
+ansible webservers -m copy -a "src=./sample.txt dest=/home/ec2-user/sample.txt mode='0644'"
+
+# Delete a file or directory
+ansible webservers -m file -a "path=/home/ec2-user/sample.txt state=absent"
+```
+
+---
+
+#### 📜 Running Playbooks
+
+```bash
+# Syntax check before execution
+ansible-playbook --syntax-check playbook.yml
+
+# Dry-run (check mode) to preview changes without applying them
+ansible-playbook --check playbook.yml
+
+# Execute the playbook against the cluster
 ansible-playbook playbook.yml
 ```
 
