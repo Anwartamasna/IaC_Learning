@@ -1,6 +1,6 @@
-# Infrastructure as Code (IaC) Learning: AWS EC2 & Ansible Automation
+# Infrastructure as Code (IaC) Learning: AWS EC2, Ansible & K3s Kubernetes
 
-This project demonstrates an end-to-end Infrastructure as Code (IaC) and configuration management workflow. It uses **Terraform** to provision AWS infrastructure (EC2 instances, security groups, and SSH keys) and configures **Ansible** to manage the deployed nodes.
+This project demonstrates an end-to-end Infrastructure as Code (IaC), configuration management, and Kubernetes deployment workflow. It uses **Terraform** to provision AWS infrastructure (EC2 instances, security groups, and SSH keys), **Ansible** for automated node configuration and package management, and deploys **K3s (Lightweight Kubernetes)** across the cluster.
 
 ---
 
@@ -12,9 +12,9 @@ flowchart TD
 
     subgraph VPC ["AWS VPC"]
         subgraph SG ["Security Group: ec2-t3small-key-sg"]
-            EC2_1["EC2 Instance 1<br/>t3.small - Amazon Linux 2023"]
-            EC2_2["EC2 Instance 2<br/>t3.small - Amazon Linux 2023"]
-            EC2_3["EC2 Instance 3<br/>t3.small - Amazon Linux 2023"]
+            EC2_1["EC2 Instance 1<br/>t3.small - Amazon Linux 2023<br/>☸️ K3s Kubernetes Node"]
+            EC2_2["EC2 Instance 2<br/>t3.small - Amazon Linux 2023<br/>☸️ K3s Kubernetes Node"]
+            EC2_3["EC2 Instance 3<br/>t3.small - Amazon Linux 2023<br/>☸️ K3s Kubernetes Node"]
         end
     end
 
@@ -36,7 +36,7 @@ flowchart TD
 ├── Ansible/
 │   ├── ansible.cfg       # Ansible configuration (user, SSH key, inventory defaults)
 │   ├── inventory.ini     # Inventory file defining the webservers group
-│   └── playbook.yml      # Ansible playbook for server configuration
+│   └── playbook.yml      # Ansible playbook for system updates & K3s Kubernetes deployment
 ├── .gitignore            # Git ignore file for secrets and state
 ├── main.tf               # Terraform EC2 instances, key pair, and security group
 ├── outputs.tf            # Terraform output definitions (IDs, IPs, SSH commands)
@@ -71,6 +71,18 @@ flowchart TD
   * Configures `remote_user = ec2-user`.
   * Specifies `private_key_file` pointing to the generated `ec2-key.pem`.
   * Disables strict host key checking (`host_key_checking = False`) for seamless automation.
+
+### 3. K3s Lightweight Kubernetes
+* **Automated Installation**:
+  * Deploys single-node K3s instances on all target nodes via the official script (`https://get.k3s.io`).
+  * Uses idempotent execution (`creates: /usr/local/bin/k3s`) to skip re-downloading if already present.
+* **Systemd Service Management**:
+  * Automatically enables and starts `k3s.service` using Ansible's `systemd` module.
+* **Kubeconfig & Access**:
+  * Waits for cluster initialization and kubeconfig creation (`/etc/rancher/k3s/k3s.yaml`).
+  * Sets safe readable permissions (`0644`) on the kubeconfig.
+* **Verification**:
+  * Executes `k3s --version` and prints the output during playbook execution.
 
 ---
 
@@ -313,17 +325,40 @@ ansible webservers -m file -a "path=/home/ec2-user/sample.txt state=absent"
 
 ---
 
-#### 📜 Running Playbooks
+#### 🚀 Deploying K3s Kubernetes via Playbook
+
+The [`Ansible/playbook.yml`](file:///home/anwartamasna/terraform_ec2_with_ssh_key/Ansible/playbook.yml) automates:
+1. **System Upgrade**: Updates all OS packages via `dnf`.
+2. **K3s Installation**: Fetches and executes the official K3s install script (`creates: /usr/local/bin/k3s`).
+3. **Service Management**: Ensures `k3s.service` is enabled on boot and running via `systemd`.
+4. **Cluster Readiness**: Waits for `/etc/rancher/k3s/k3s.yaml` to be created.
+5. **Permissions**: Sets `0644` readable permissions on the kubeconfig.
+6. **Verification**: Executes `k3s --version` and prints the output.
 
 ```bash
-# Syntax check before execution
+# 1. Validate playbook syntax
 ansible-playbook --syntax-check playbook.yml
 
-# Dry-run (check mode) to preview changes without applying them
-ansible-playbook --check playbook.yml
-
-# Execute the playbook against the cluster
+# 2. Deploy K3s across the entire webservers cluster
 ansible-playbook playbook.yml
+```
+
+##### ☸️ Verifying K3s & Kubernetes Cluster with Ansible Ad-Hoc Commands
+
+After deployment completes, verify cluster health and running workloads across all nodes directly:
+
+```bash
+# Check K3s service status
+ansible webservers -a "systemctl status k3s"
+
+# Check Kubernetes node status on each server
+ansible webservers -a "k3s kubectl get nodes"
+
+# Inspect running pods across all namespaces
+ansible webservers -a "k3s kubectl get pods -A"
+
+# Verify kubeconfig file exists and permissions are 0644
+ansible webservers -a "ls -l /etc/rancher/k3s/k3s.yaml"
 ```
 
 ---
