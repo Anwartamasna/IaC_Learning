@@ -1,0 +1,172 @@
+---
+- name: Install Docker, Jenkins, and SonarQube
+  hosts: cicd
+  become: yes
+  tasks:
+    - name: Upgrade all Packages
+      dnf:
+        name: "*"
+        state: latest
+
+    # 1. System optimizations and swap space for running multiple CI/CD services
+    - name: Check if swapfile exists
+      stat:
+        path: /swapfile
+      register: swapfile_stat
+
+    - name: Create swapfile if not present
+      command: dd if=/dev/zero of=/swapfile bs=128M count=16
+      when: not swapfile_stat.stat.exists
+
+    - name: Set secure permissions on swapfile
+      file:
+        path: /swapfile
+        mode: '0600'
+      when: not swapfile_stat.stat.exists
+
+    - name: Format swapfile
+      command: mkswap /swapfile
+      when: not swapfile_stat.stat.exists
+
+    - name: Enable swapfile
+      command: swapon /swapfile
+      when: not swapfile_stat.stat.exists
+
+    - name: Add swap to /etc/fstab
+      mount:
+        name: none
+        src: /swapfile
+        fstype: swap
+        opts: sw
+        passno: "0"
+        dump: "0"
+        state: present
+
+    # Kernel limits required by SonarQube / embedded Elasticsearch
+    - name: Configure vm.max_map_count for SonarQube
+      sysctl:
+        name: vm.max_map_count
+        value: '262144'
+        state: present
+        reload: yes
+
+    - name: Configure fs.file-max for SonarQube
+      sysctl:
+        name: fs.file-max
+        value: '65536'
+        state: present
+        reload: yes
+
+    # 2. Docker Engine installation
+    - name: Install Docker
+      dnf:
+        name: docker
+        state: present
+
+    - name: Ensure Docker service is started and enabled
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add ec2-user to docker group
+      user:
+        name: ec2-user
+        groups: docker
+        append: yes
+
+    # 3. Jenkins container deployment
+    - name: Pull Jenkins LTS Docker image
+      command: docker pull jenkins/jenkins:lts
+      register: jenkins_pull
+      changed_when: "'Downloaded newer image' in jenkins_pull.stdout"
+
+    - name: Check if Jenkins container exists
+      command: docker ps -a --filter "name=^jenkins$" --format "{{ '{{' }}.Names{{ '}}' }}"
+      register: jenkins_container_check
+      changed_when: false
+
+    - name: Check if Jenkins container is running
+      command: docker ps --filter "name=^jenkins$" --format "{{ '{{' }}.Names{{ '}}' }}"
+      register: jenkins_running_check
+      changed_when: false
+
+    - name: Start Jenkins container if stopped
+      command: docker start jenkins
+      when: jenkins_container_check.stdout == "jenkins" and jenkins_running_check.stdout == ""
+
+    - name: Run Jenkins container
+      command: >
+        docker run -d
+        --name jenkins
+        --restart unless-stopped
+        -p 8080:8080
+        -p 50000:50000
+        -v jenkins_home:/var/jenkins_home
+        jenkins/jenkins:lts
+      when: jenkins_container_check.stdout != "jenkins"
+
+    - name: Wait for Jenkins Web UI to be available
+      wait_for:
+        port: 8080
+        delay: 5
+        timeout: 120
+
+    - name: Retrieve initial Jenkins admin password (if present)
+      command: docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
+      register: jenkins_admin_password
+      failed_when: false
+      changed_when: false
+
+    # 4. SonarQube container deployment
+    - name: Pull SonarQube LTS Docker image
+      command: docker pull sonarqube:lts-community
+      register: sonar_pull
+      changed_when: "'Downloaded newer image' in sonar_pull.stdout"
+
+    - name: Check if SonarQube container exists
+      command: docker ps -a --filter "name=^sonarqube$" --format "{{ '{{' }}.Names{{ '}}' }}"
+      register: sonarqube_container_check
+      changed_when: false
+
+    - name: Check if SonarQube container is running
+      command: docker ps --filter "name=^sonarqube$" --format "{{ '{{' }}.Names{{ '}}' }}"
+      register: sonarqube_running_check
+      changed_when: false
+
+    - name: Start SonarQube container if stopped
+      command: docker start sonarqube
+      when: sonarqube_container_check.stdout == "sonarqube" and sonarqube_running_check.stdout == ""
+
+    - name: Run SonarQube container
+      command: >
+        docker run -d
+        --name sonarqube
+        --restart unless-stopped
+        -p 9000:9000
+        -e SONAR_SEARCH_JAVAADDITIONALOPTS="-Xms256m -Xmx512m"
+        -v sonarqube_data:/opt/sonarqube/data
+        -v sonarqube_extensions:/opt/sonarqube/extensions
+        -v sonarqube_logs:/opt/sonarqube/logs
+        sonarqube:lts-community
+      when: sonarqube_container_check.stdout != "sonarqube"
+
+    - name: Wait for SonarQube Web UI to be available
+      wait_for:
+        port: 9000
+        delay: 15
+        timeout: 180
+
+    # 5. Display Access Details
+    - name: Display CI/CD Services access details
+      debug:
+        msg:
+          - "======================================================="
+          - " CI/CD Server Stack is running successfully on Docker!"
+          - "-------------------------------------------------------"
+          - " Jenkins URL:   http://{{ inventory_hostname }}:8080"
+          - " Initial Admin Password: {{ jenkins_admin_password.stdout if jenkins_admin_password.stdout != '' else '(Already configured or unlocked)' }}"
+          - "-------------------------------------------------------"
+          - " SonarQube URL: http://{{ inventory_hostname }}:9000"
+          - " Default Login: admin / admin (change on first login)"
+          - "======================================================="

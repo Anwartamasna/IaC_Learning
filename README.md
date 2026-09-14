@@ -1,6 +1,6 @@
-# Infrastructure as Code (IaC) Learning: AWS EC2, Ansible & K3s Kubernetes
+# Infrastructure as Code (IaC) Learning: AWS EC2, Ansible, K3s Kubernetes & CI/CD (Docker, Jenkins, SonarQube)
 
-This project demonstrates an end-to-end Infrastructure as Code (IaC), configuration management, and Kubernetes deployment workflow. It uses **Terraform** to provision AWS infrastructure (EC2 instances, security groups, and SSH keys), **Ansible** for automated node configuration and package management, and deploys **K3s (Lightweight Kubernetes)** across the cluster.
+This project demonstrates an end-to-end Infrastructure as Code (IaC), configuration management, and DevOps workflow. It uses **Terraform** to provision AWS infrastructure (EC2 instances, modular security groups, and SSH keys), **Ansible** for automated node configuration and package management, and deploys **K3s (Lightweight Kubernetes)** on webservers alongside a containerized **CI/CD stack (Docker, Jenkins, and SonarQube)** on a dedicated CI/CD server.
 
 ---
 
@@ -8,23 +8,29 @@ This project demonstrates an end-to-end Infrastructure as Code (IaC), configurat
 
 ```mermaid
 flowchart TD
-    User["Admin / Local Machine"]
+    User["DevOps Admin / Web Browser / kubectl"]
 
     subgraph VPC ["AWS VPC"]
-        subgraph SG ["Security Group: ec2-t3small-key-sg"]
-            EC2_1["EC2 Instance 1<br/>t3.small - Amazon Linux 2023<br/>☸️ K3s Kubernetes Node"]
-            EC2_2["EC2 Instance 2<br/>t3.small - Amazon Linux 2023<br/>☸️ K3s Kubernetes Node"]
-            EC2_3["EC2 Instance 3<br/>t3.small - Amazon Linux 2023<br/>☸️ K3s Kubernetes Node"]
+        subgraph SG_COMMON ["Base Security Group: ec2-t3small-key-sg (SSH & ICMP)"]
+            subgraph SG_K8S ["Kubernetes Webservers SG: ec2-t3small-key-k8s-web-sg<br/>Ports: 80, 443, 6443, 30000-32767"]
+                EC2_1["EC2 Instance 1 (t3.small)<br/>Amazon Linux 2023<br/>☸️ K3s Kubernetes Node"]
+                EC2_2["EC2 Instance 2 (t3.small)<br/>Amazon Linux 2023<br/>☸️ K3s Kubernetes Node"]
+                EC2_3["EC2 Instance 3 (t3.small)<br/>Amazon Linux 2023<br/>☸️ K3s Kubernetes Node"]
+            end
+
+            subgraph SG_CICD ["CI/CD Server SG: ec2-t3small-key-cicd-sg<br/>Ports: 8080 (Jenkins), 50000 (Agent), 9000 (SonarQube)"]
+                EC2_CICD["CI/CD Server (t3.small)<br/>Amazon Linux 2023<br/>🐳 Docker Engine<br/>☕ Jenkins LTS<br/>🔍 SonarQube LTS"]
+            end
         end
     end
 
-    User -->|"SSH (Port 22) / ICMP Ping"| EC2_1
-    User -->|"SSH (Port 22) / ICMP Ping"| EC2_2
-    User -->|"SSH (Port 22) / ICMP Ping"| EC2_3
+    User -->|"SSH (22) / ICMP Ping"| SG_COMMON
+    User -->|"HTTP (80) / HTTPS (443) / K3s API (6443)"| SG_K8S
+    User -->|"Jenkins UI (8080) / SonarQube UI (9000)"| SG_CICD
 
-    EC2_1 <-->|"Internal Traffic / ICMP"| EC2_2
-    EC2_2 <-->|"Internal Traffic / ICMP"| EC2_3
-    EC2_1 <-->|"Internal Traffic / ICMP"| EC2_3
+    EC2_CICD <-->|"Internal Traffic / Deployments"| EC2_1
+    EC2_CICD <-->|"Internal Traffic / Deployments"| EC2_2
+    EC2_CICD <-->|"Internal Traffic / Deployments"| EC2_3
 ```
 
 ---
@@ -34,16 +40,17 @@ flowchart TD
 ```text
 .
 ├── Ansible/
-│   ├── ansible.cfg       # Ansible configuration (user, SSH key, inventory defaults)
-│   ├── inventory.ini     # Inventory file defining the webservers group
-│   └── playbook.yml      # Ansible playbook for system updates & K3s Kubernetes deployment
-├── .gitignore            # Git ignore file for secrets and state
-├── main.tf               # Terraform EC2 instances, key pair, and security group
-├── outputs.tf            # Terraform output definitions (IDs, IPs, SSH commands)
-├── providers.tf          # AWS and Local/TLS provider definitions
-├── variables.tf          # Configurable variables (region, instance type, CIDR)
-├── terraform.tfvars      # Local variable values (credentials, region)
-└── README.md             # Project documentation
+│   ├── ansible.cfg                 # Ansible configuration (user, SSH key, inventory defaults)
+│   ├── docker_jenkins_playbook.yml # Ansible playbook for Docker & Jenkins deployment on CI/CD server
+│   ├── inventory.ini               # Inventory file defining [webservers] and [cicd] groups
+│   └── playbook.yml                # Ansible playbook for system updates & K3s Kubernetes deployment
+├── .gitignore                      # Git ignore file for secrets and state
+├── main.tf                         # Terraform EC2 instances, key pair, and security groups
+├── outputs.tf                      # Terraform output definitions (IDs, IPs, SSH commands, web URLs)
+├── providers.tf                    # AWS and Local/TLS provider definitions
+├── variables.tf                    # Configurable variables (region, instance type, CIDR)
+├── terraform.tfvars                # Local variable values (credentials, region)
+└── README.md                       # Project documentation
 ```
 
 ---
@@ -55,13 +62,23 @@ flowchart TD
   * An RSA 4096-bit private key is generated via `tls_private_key`.
   * The public key is registered in AWS as `aws_key_pair`.
   * The private key is saved locally to `ec2-key.pem` with secure permissions (`0600`) and ignored by git for security.
-* **Security Group Configuration (`ec2_sg`)**:
-  * **SSH (Port 22)**: Ingress allowed from the configured CIDR block.
-  * **ICMP**: Ingress enabled across all types/codes (`0.0.0.0/0`) to allow pinging from anywhere.
-  * **Intra-Cluster Intercommunication (`self = true`)**: Full traffic and ICMP enabled between instances in the same security group over their private IPs.
-  * **Egress**: Unrestricted outbound access (`0.0.0.0/0`).
+* **Security Group Configuration**:
+  * **Base Management (`ec2_sg`)**:
+    * **SSH (Port 22)**: Ingress allowed from the configured CIDR block.
+    * **ICMP**: Ingress enabled across all types/codes (`0.0.0.0/0`) to allow pinging from anywhere.
+    * **Intra-Cluster Intercommunication (`self = true`)**: Full traffic enabled between instances in the same security group over private IPs.
+    * **Egress**: Unrestricted outbound access (`0.0.0.0/0`).
+  * **Kubernetes Webservers (`k8s_web_sg`)**:
+    * **HTTP (Port 80)** & **HTTPS (Port 443)**: Web application traffic.
+    * **Kubernetes API (Port 6443)**: Remote cluster management via `kubectl`.
+    * **NodePort Services (Ports 30000-32767)**: Exposed Kubernetes NodePort services.
+  * **CI/CD Server (`cicd_sg`)**:
+    * **Jenkins Web UI (Port 8080)**: Jenkins web interface.
+    * **Jenkins Agent JNLP (Port 50000)**: Inbound Jenkins agent connections.
+    * **SonarQube (Port 9000)**: SonarQube code quality dashboard & API.
 * **Compute**:
-  * Deploys 3 `t3.small` EC2 instances running **Amazon Linux 2023** queried dynamically via `aws_ami`.
+  * Deploys 3 `t3.small` EC2 instances for Kubernetes webservers (`ec2_instance`, `second_ec2`, `third_ec2`).
+  * Deploys 1 `t3.small` EC2 instance for the CI/CD server (`CI_CD_server_ec2`).
 
 ### 2. Ansible Integration
 * **`inventory.ini`**:
@@ -83,6 +100,27 @@ flowchart TD
   * Sets safe readable permissions (`0644`) on the kubeconfig.
 * **Verification**:
   * Executes `k3s --version` and prints the output during playbook execution.
+
+### 4. CI/CD Server Stack (Docker, Jenkins & SonarQube)
+* **System & Virtual Memory Optimization**:
+  * Automatically provisions and configures a **2GB swap file** (`/swapfile`) formatted and persisted in `/etc/fstab` to handle multiple container JVM workloads on `t3.small` smoothly.
+  * Tunes kernel parameters required by SonarQube's embedded Elasticsearch:
+    * `vm.max_map_count = 262144`
+    * `fs.file-max = 65536`
+* **Docker Engine**:
+  * Installs the native Amazon Linux 2023 `docker` package.
+  * Enables and starts `docker.service` with systemd.
+  * Grants `ec2-user` access to the `docker` group.
+* **Jenkins LTS**:
+  * Deployed in a standalone container with restart policy `unless-stopped`.
+  * Ports: `8080` (HTTP Web UI) and `50000` (JNLP inbound agents).
+  * Data persistence backed by Docker named volume `jenkins_home`.
+  * Reads initial admin password safely from `/var/jenkins_home/secrets/initialAdminPassword`.
+* **SonarQube Community LTS**:
+  * Deployed in a standalone container with restart policy `unless-stopped`.
+  * Port: `9000` (Web UI & analysis API).
+  * Memory limits tuned for JVM stability: `-e SONAR_SEARCH_JAVAADDITIONALOPTS="-Xms256m -Xmx512m"`.
+  * Data persistence backed by Docker named volumes: `sonarqube_data`, `sonarqube_extensions`, and `sonarqube_logs`.
 
 ---
 
@@ -359,6 +397,65 @@ ansible webservers -a "k3s kubectl get pods -A"
 
 # Verify kubeconfig file exists and permissions are 0644
 ansible webservers -a "ls -l /etc/rancher/k3s/k3s.yaml"
+```
+
+---
+
+#### 🐳 Deploying Docker, Jenkins & SonarQube CI/CD via Playbook
+
+The [`Ansible/docker_jenkins_playbook.yml`](file:///home/anwartamasna/terraform_ec2_with_ssh_key/Ansible/docker_jenkins_playbook.yml) automates the entire CI/CD stack:
+
+1. **System & Swap Optimization**:
+   - Creates and mounts a **2GB swap file** (`/swapfile`) with persistence in `/etc/fstab`.
+   - Applies essential kernel parameters (`vm.max_map_count = 262144`, `fs.file-max = 65536`) for SonarQube's embedded Elasticsearch.
+2. **Docker Engine**: Installs `docker` via `dnf`, enables/starts `docker.service`, and adds `ec2-user` to the `docker` group.
+3. **Jenkins LTS**:
+   - Pulls `jenkins/jenkins:lts`.
+   - Runs container `jenkins` on ports `8080` (HTTP Web UI) and `50000` (JNLP inbound agents) with volume `jenkins_home:/var/jenkins_home` and `--restart unless-stopped`.
+   - Waits for port `8080` readiness and retrieves the initial admin password from `/var/jenkins_home/secrets/initialAdminPassword`.
+4. **SonarQube Community LTS**:
+   - Pulls `sonarqube:lts-community`.
+   - Runs container `sonarqube` on port `9000` (Web UI & analysis API) with JVM tuning and persistent volumes `sonarqube_data`, `sonarqube_extensions`, `sonarqube_logs`.
+   - Waits for port `9000` to be available.
+5. **Credentials & Access Summary**: Prints direct login URLs and default credentials.
+
+```bash
+# 1. Validate playbook syntax
+ansible-playbook --syntax-check docker_jenkins_playbook.yml
+
+# 2. Deploy Docker, Jenkins, and SonarQube targeting the CI/CD server
+ansible-playbook docker_jenkins_playbook.yml --limit cicd
+```
+
+##### 🔑 Service Dashboard Access & Credentials
+
+| Service | Port | Access URL | Default / Initial Credentials |
+|---|---|---|---|
+| **Jenkins** | `8080` | `http://<CICD_PUBLIC_IP>:8080` | Username: `admin`<br>Password: Displayed during playbook run (or via `docker exec`) |
+| **Jenkins Agent** | `50000` | `<CICD_PUBLIC_IP>:50000` | JNLP listener for Jenkins build nodes |
+| **SonarQube** | `9000` | `http://<CICD_PUBLIC_IP>:9000` | Username: `admin`<br>Password: `admin` *(prompted to update on first login)* |
+
+##### 🔍 Verifying CI/CD Server Workloads & Containers
+
+```bash
+# Check all running Docker containers (use -b for sudo privileges)
+ansible cicd -b -a "docker ps"
+
+# View Jenkins initial admin password
+ansible cicd -b -a "docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword"
+
+# Inspect Jenkins container logs
+ansible cicd -b -a "docker logs --tail 30 jenkins"
+
+# Inspect SonarQube container logs
+ansible cicd -b -a "docker logs --tail 30 sonarqube"
+
+# Restart containers if necessary
+ansible cicd -b -a "docker restart jenkins"
+ansible cicd -b -a "docker restart sonarqube"
+
+# Check swap memory and RAM utilization
+ansible cicd -b -a "free -h"
 ```
 
 ---
