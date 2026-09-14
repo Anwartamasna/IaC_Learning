@@ -41,9 +41,12 @@ flowchart TD
 .
 ├── Ansible/
 │   ├── ansible.cfg                 # Ansible configuration (user, SSH key, inventory defaults)
-│   ├── docker_jenkins_playbook.yml # Ansible playbook for Docker & Jenkins deployment on CI/CD server
+│   ├── docker_jenkins_playbook.yml # Ansible playbook for Docker, Jenkins & SonarQube on CI/CD server
+│   ├── harbor_playbook.yml         # Ansible playbook for Helm & Harbor registry deployment on K3s
 │   ├── inventory.ini               # Inventory file defining [webservers] and [cicd] groups
-│   └── playbook.yml                # Ansible playbook for system updates & K3s Kubernetes deployment
+│   ├── playbook.yml                # Ansible playbook for system updates & K3s Kubernetes deployment
+│   └── templates/
+│       └── harbor-values.yaml.j2   # Jinja2 template for Harbor Helm chart custom values
 ├── .gitignore                      # Git ignore file for secrets and state
 ├── main.tf                         # Terraform EC2 instances, key pair, and security groups
 ├── outputs.tf                      # Terraform output definitions (IDs, IPs, SSH commands, web URLs)
@@ -456,6 +459,58 @@ ansible cicd -b -a "docker restart sonarqube"
 
 # Check swap memory and RAM utilization
 ansible cicd -b -a "free -h"
+```
+
+---
+
+#### 🚢 Deploying Harbor Container Registry on Kubernetes via Playbook
+
+The [`Ansible/harbor_playbook.yml`](file:///home/anwartamasna/terraform_ec2_with_ssh_key/Ansible/harbor_playbook.yml) automates deploying Harbor on K3s across the `webservers` cluster using an external Jinja2 template [`Ansible/templates/harbor-values.yaml.j2`](file:///home/anwartamasna/terraform_ec2_with_ssh_key/Ansible/templates/harbor-values.yaml.j2):
+
+1. **System & Swap Optimization**:
+   - Provisions and activates a **2GB swap file** (`/swapfile`) with `/etc/fstab` persistence to handle Harbor's multi-service architecture safely on `t3.small` nodes.
+2. **Helm 3 Installation**:
+   - Checks and installs the official `helm` 3 CLI binary into `/usr/local/bin/helm`.
+3. **Harbor Helm Chart**:
+   - Registers the official Harbor repository (`https://helm.goharbor.io`) and updates charts.
+4. **Minimal Tailored Configuration**:
+   - Deploys values from `templates/harbor-values.yaml.j2`:
+     - `expose.type: nodePort` (HTTP Port `30002`, HTTPS Port `30003`).
+     - Disables heavy optional components (`trivy.enabled: false`, `notary.enabled: false`) to ensure a low memory footprint.
+     - Sets default admin credentials (`admin` / `Harbor12345`).
+     - Persistent volume claims backed by K3s default `local-path` storage class.
+5. **Readiness Checks**:
+   - Automatically waits for Harbor Core and Portal pods to reach `Ready` state.
+
+```bash
+# 1. Validate playbook syntax
+ansible-playbook --syntax-check harbor_playbook.yml
+
+# 2. Deploy Harbor across the webservers cluster
+ansible-playbook harbor_playbook.yml --limit webservers
+```
+
+##### 🔑 Harbor Dashboard Access & Credentials
+
+| Service | Protocol / Port | Access URL | Credentials |
+|---|---|---|---|
+| **Harbor Web UI** | `HTTP: 30002` | `http://<WEBSERVER_PUBLIC_IP>:30002` | Username: `admin`<br>Password: `Harbor12345` |
+| **Docker CLI Login** | `HTTP: 30002` | `docker login <WEBSERVER_PUBLIC_IP>:30002` | Username: `admin`<br>Password: `Harbor12345` |
+
+> [!TIP]
+> When pushing or pulling from Docker over HTTP without a custom TLS certificate, add the registry to `/etc/docker/daemon.json` under `"insecure-registries": ["<WEBSERVER_PUBLIC_IP>:30002"]` and restart the docker daemon.
+
+##### 🔍 Verifying Harbor on Kubernetes
+
+```bash
+# Check running pods in the harbor namespace
+ansible webservers -b -a "k3s kubectl get pods -n harbor"
+
+# Check Harbor services and exposed NodePort
+ansible webservers -b -a "k3s kubectl get svc -n harbor"
+
+# Inspect PersistentVolumeClaims
+ansible webservers -b -a "k3s kubectl get pvc -n harbor"
 ```
 
 ---
