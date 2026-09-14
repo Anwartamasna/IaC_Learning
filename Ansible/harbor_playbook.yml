@@ -1,0 +1,101 @@
+---
+- name: Deploy Harbor Registry on Kubernetes (Webservers)
+  hosts: webservers
+  become: yes
+  tasks:
+    # 1. System Swap Configuration
+    - name: Check if swapfile exists
+      stat:
+        path: /swapfile
+      register: swapfile_stat
+
+    - name: Create swapfile if not present (2GB)
+      command: dd if=/dev/zero of=/swapfile bs=128M count=16
+      when: not swapfile_stat.stat.exists
+
+    - name: Set secure permissions on swapfile
+      file:
+        path: /swapfile
+        mode: '0600'
+      when: not swapfile_stat.stat.exists
+
+    - name: Format swapfile
+      command: mkswap /swapfile
+      when: not swapfile_stat.stat.exists
+
+    - name: Enable swapfile
+      command: swapon /swapfile
+      when: not swapfile_stat.stat.exists
+
+    - name: Add swap to /etc/fstab
+      mount:
+        name: none
+        src: /swapfile
+        fstype: swap
+        opts: sw
+        passno: "0"
+        dump: "0"
+        state: present
+
+    # 2. Install Helm 3
+    - name: Check if Helm binary is installed
+      stat:
+        path: /usr/local/bin/helm
+      register: helm_stat
+
+    - name: Download and install Helm 3
+      shell: curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      when: not helm_stat.stat.exists
+
+    # 3. Add and Update Harbor Helm Repository
+    - name: Add Harbor Helm repository
+      command: helm repo add harbor https://helm.goharbor.io
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: false
+
+    - name: Update Helm repositories
+      command: helm repo update
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: false
+
+    # 4. Copy Harbor custom values from local template
+    - name: Deploy Harbor values configuration
+      template:
+        src: templates/harbor-values.yaml.j2
+        dest: /tmp/harbor-values.yaml
+
+    # 5. Deploy Harbor via Helm
+    - name: Deploy or upgrade Harbor release
+      command: >
+        helm upgrade --install harbor harbor/harbor
+        --namespace harbor
+        --create-namespace
+        -f /tmp/harbor-values.yaml
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: helm_install
+      changed_when: "'Release \"harbor\" has been upgraded' in helm_install.stdout or 'STATUS: deployed' in helm_install.stdout"
+
+    # 6. Wait for Harbor core and portal pods
+    - name: Wait for Harbor Core pod to be ready
+      command: k3s kubectl wait --namespace harbor --for=condition=ready pod -l component=core --timeout=300s
+      changed_when: false
+
+    - name: Wait for Harbor Portal pod to be ready
+      command: k3s kubectl wait --namespace harbor --for=condition=ready pod -l component=portal --timeout=180s
+      changed_when: false
+
+    # 7. Verification and Credentials Summary
+    - name: Display Harbor access details
+      debug:
+        msg:
+          - "======================================================="
+          - " Harbor Registry deployed successfully on Kubernetes!"
+          - " Node IP:       {{ inventory_hostname }}"
+          - " Web UI URL:    http://{{ inventory_hostname }}:30002"
+          - " Default Admin: admin"
+          - " Password:      Harbor12345"
+          - " Docker Login:  docker login {{ inventory_hostname }}:30002 -u admin -p Harbor12345"
+          - "======================================================="
