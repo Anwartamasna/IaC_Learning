@@ -12,10 +12,13 @@ flowchart TD
 
     subgraph VPC ["AWS VPC"]
         subgraph SG_COMMON ["Base Security Group: ec2-t3small-key-sg (SSH & ICMP)"]
-            subgraph SG_K8S ["Kubernetes Webservers SG: ec2-t3small-key-k8s-web-sg<br/>Ports: 80, 443, 6443, 30000-32767"]
-                EC2_1["EC2 Instance 1 (t3.small)<br/>Amazon Linux 2023<br/>☸️ K3s Kubernetes Node"]
-                EC2_2["EC2 Instance 2 (t3.small)<br/>Amazon Linux 2023<br/>☸️ K3s Kubernetes Node"]
-                EC2_3["EC2 Instance 3 (t3.small)<br/>Amazon Linux 2023<br/>☸️ K3s Kubernetes Node"]
+            subgraph SG_K8S ["Unified K3s Cluster SG: ec2-t3small-key-k8s-web-sg<br/>Ports: 80, 443, 6443, 30000-32767"]
+                EC2_1["EC2 Instance 1 (t3.small)<br/>Amazon Linux 2023<br/>☸️ K3s Control-Plane (Master Server)"]
+                EC2_2["EC2 Instance 2 (t3.small)<br/>Amazon Linux 2023<br/>☸️ K3s Worker Node 1 (Agent)"]
+                EC2_3["EC2 Instance 3 (t3.small)<br/>Amazon Linux 2023<br/>☸️ K3s Worker Node 2 (Agent)"]
+
+                EC2_1 <-->|"Cluster Interconnect (6443, 8472, 10250)"| EC2_2
+                EC2_1 <-->|"Cluster Interconnect (6443, 8472, 10250)"| EC2_3
             end
 
             subgraph SG_CICD ["CI/CD Server SG: ec2-t3small-key-cicd-sg<br/>Ports: 8080 (Jenkins), 50000 (Agent), 9000 (SonarQube)"]
@@ -25,12 +28,11 @@ flowchart TD
     end
 
     User -->|"SSH (22) / ICMP Ping"| SG_COMMON
-    User -->|"HTTP (80) / HTTPS (443) / K3s API (6443)"| SG_K8S
+    User -->|"K3s API (6443)"| EC2_1
+    User -->|"HTTP (80) / HTTPS (443) / NodePort (30000-32767)"| SG_K8S
     User -->|"Jenkins UI (8080) / SonarQube UI (9000)"| SG_CICD
 
-    EC2_CICD <-->|"Internal Traffic / Deployments"| EC2_1
-    EC2_CICD <-->|"Internal Traffic / Deployments"| EC2_2
-    EC2_CICD <-->|"Internal Traffic / Deployments"| EC2_3
+    EC2_CICD <-->|"Deployments & API Calls (6443)"| EC2_1
 ```
 
 ---
@@ -43,8 +45,8 @@ flowchart TD
 │   ├── ansible.cfg                 # Ansible configuration (user, SSH key, inventory defaults)
 │   ├── docker_jenkins_playbook.yml # Ansible playbook for Docker, Jenkins & SonarQube on CI/CD server
 │   ├── harbor_playbook.yml         # Ansible playbook for Helm & Harbor registry deployment on K3s
-│   ├── inventory.ini               # Inventory file defining [webservers] and [cicd] groups
-│   ├── playbook.yml                # Ansible playbook for system updates & K3s Kubernetes deployment
+│   ├── inventory.ini               # Inventory defining [k3s_server], [k3s_agent], [k3s_cluster] & [cicd]
+│   ├── playbook.yml                # Ansible playbook deploying unified 1-master 2-worker K3s cluster
 │   └── templates/
 │       └── harbor-values.yaml.j2   # Jinja2 template for Harbor Helm chart custom values
 ├── .gitignore                      # Git ignore file for secrets and state
@@ -85,24 +87,30 @@ flowchart TD
 
 ### 2. Ansible Integration
 * **`inventory.ini`**:
-  * Groups the 3 instance public IP addresses under `[webservers]`.
+  * Structures instances hierarchically:
+    * `[k3s_server]`: 1 Master / Control-Plane node.
+    * `[k3s_agent]`: 2 Worker / Agent nodes.
+    * `[k3s_cluster:children]`: Aggregates server and agents for unified cluster plays.
+    * `[webservers:children]`: Preserves backward compatibility pointing to `k3s_cluster`.
+    * `[cicd]`: Dedicated CI/CD server.
 * **`ansible.cfg`**:
   * Automatically sets the default inventory to `./inventory.ini`.
   * Configures `remote_user = ec2-user`.
   * Specifies `private_key_file` pointing to the generated `ec2-key.pem`.
   * Disables strict host key checking (`host_key_checking = False`) for seamless automation.
 
-### 3. K3s Lightweight Kubernetes
-* **Automated Installation**:
-  * Deploys single-node K3s instances on all target nodes via the official script (`https://get.k3s.io`).
-  * Uses idempotent execution (`creates: /usr/local/bin/k3s`) to skip re-downloading if already present.
-* **Systemd Service Management**:
-  * Automatically enables and starts `k3s.service` using Ansible's `systemd` module.
-* **Kubeconfig & Access**:
-  * Waits for cluster initialization and kubeconfig creation (`/etc/rancher/k3s/k3s.yaml`).
-  * Sets safe readable permissions (`0644`) on the kubeconfig.
-* **Verification**:
-  * Executes `k3s --version` and prints the output during playbook execution.
+### 3. Unified Multi-Node K3s Cluster
+* **Cluster Topology (1 Control-Plane + 2 Workers)**:
+  * **Master Server (`k3s_server`)**:
+    * Runs `k3s server` with `/etc/rancher/k3s/config.yaml` specifying `tls-san`, `node-ip`, `advertise-address`, and internal interface flannel binding.
+    * Generates cluster join token at `/var/lib/rancher/k3s/server/node-token`.
+  * **Worker Agents (`k3s_agent`)**:
+    * Cleanly decommission any previous standalone server instance if present.
+    * Join the master control plane automatically via private IP (`https://<master-private-ip>:6443`) using the retrieved token.
+    * Run the lightweight `k3s-agent.service`.
+  * **Dynamic Node Labeling & Verification**:
+    * Automatically labels worker nodes with `node-role.kubernetes.io/worker=worker`.
+    * Waits until all 3 nodes reach the `Ready` status before completing.
 
 ### 4. CI/CD Server Stack (Docker, Jenkins & SonarQube)
 * **System & Virtual Memory Optimization**:
@@ -371,35 +379,37 @@ ansible webservers -m file -a "path=/home/ec2-user/sample.txt state=absent"
 The [`Ansible/playbook.yml`](file:///home/anwartamasna/terraform_ec2_with_ssh_key/Ansible/playbook.yml) automates:
 1. **System Upgrade**: Updates all OS packages via `dnf`.
 2. **K3s Installation**: Fetches and executes the official K3s install script (`creates: /usr/local/bin/k3s`).
-3. **Service Management**: Ensures `k3s.service` is enabled on boot and running via `systemd`.
-4. **Cluster Readiness**: Waits for `/etc/rancher/k3s/k3s.yaml` to be created.
-5. **Permissions**: Sets `0644` readable permissions on the kubeconfig.
-6. **Verification**: Executes `k3s --version` and prints the output.
+3. **Multi-Node Deployment**:
+   - Master server initializes K3s control-plane with `--tls-san`, `--node-ip`, and internal interface flannel bindings.
+   - Extracts join token from `/var/lib/rancher/k3s/server/node-token`.
+   - Worker agents cleanly decommission any prior standalone servers, join the master via internal IP (`https://<master-private-ip>:6443`), and run `k3s-agent.service`.
+4. **Permissions & Cluster Readiness**: Sets `0644` permissions on `/etc/rancher/k3s/k3s.yaml` and waits for all 3 nodes to reach `Ready`.
+5. **Node Role Labeling**: Automatically labels worker nodes (`node-role.kubernetes.io/worker=worker`).
 
 ```bash
 # 1. Validate playbook syntax
 ansible-playbook --syntax-check playbook.yml
 
-# 2. Deploy K3s across the entire webservers cluster
+# 2. Deploy unified K3s cluster across all 3 nodes
 ansible-playbook playbook.yml
 ```
 
-##### ☸️ Verifying K3s & Kubernetes Cluster with Ansible Ad-Hoc Commands
+##### ☸️ Verifying the Unified K3s Cluster with Ansible Ad-Hoc Commands
 
-After deployment completes, verify cluster health and running workloads across all nodes directly:
+After deployment completes, verify cluster health and nodes directly:
 
 ```bash
-# Check K3s service status
-ansible webservers -a "systemctl status k3s"
+# Verify all 3 nodes from control plane (1 control-plane + 2 workers)
+ansible k3s_server -a "k3s kubectl get nodes -o wide"
 
-# Check Kubernetes node status on each server
-ansible webservers -a "k3s kubectl get nodes"
+# Inspect pods running across the cluster
+ansible k3s_server -a "k3s kubectl get pods -A -o wide"
 
-# Inspect running pods across all namespaces
-ansible webservers -a "k3s kubectl get pods -A"
+# Check master service status
+ansible k3s_server -a "systemctl status k3s"
 
-# Verify kubeconfig file exists and permissions are 0644
-ansible webservers -a "ls -l /etc/rancher/k3s/k3s.yaml"
+# Check agent service status on worker nodes
+ansible k3s_agent -a "systemctl status k3s-agent"
 ```
 
 ---
@@ -465,12 +475,12 @@ ansible cicd -b -a "free -h"
 
 #### 🚢 Deploying Harbor Container Registry on Kubernetes via Playbook
 
-The [`Ansible/harbor_playbook.yml`](file:///home/anwartamasna/terraform_ec2_with_ssh_key/Ansible/harbor_playbook.yml) automates deploying Harbor on K3s across the `webservers` cluster using an external Jinja2 template [`Ansible/templates/harbor-values.yaml.j2`](file:///home/anwartamasna/terraform_ec2_with_ssh_key/Ansible/templates/harbor-values.yaml.j2):
+The [`Ansible/harbor_playbook.yml`](file:///home/anwartamasna/terraform_ec2_with_ssh_key/Ansible/harbor_playbook.yml) automates deploying Harbor on the unified K3s cluster using an external Jinja2 template [`Ansible/templates/harbor-values.yaml.j2`](file:///home/anwartamasna/terraform_ec2_with_ssh_key/Ansible/templates/harbor-values.yaml.j2):
 
 1. **System & Swap Optimization**:
-   - Provisions and activates a **2GB swap file** (`/swapfile`) with `/etc/fstab` persistence to handle Harbor's multi-service architecture safely on `t3.small` nodes.
-2. **Helm 3 Installation**:
-   - Checks and installs the official `helm` 3 CLI binary into `/usr/local/bin/helm`.
+   - Provisions and activates a **2GB swap file** (`/swapfile`) with `/etc/fstab` persistence across all cluster nodes (`k3s_cluster`) to handle multi-pod workloads safely on `t3.small` nodes.
+2. **Helm 3 Installation on Control-Plane**:
+   - Checks and installs the official `helm` 3 CLI binary into `/usr/local/bin/helm` on `k3s_server`.
 3. **Harbor Helm Chart**:
    - Registers the official Harbor repository (`https://helm.goharbor.io`) and updates charts.
 4. **Minimal Tailored Configuration**:
@@ -479,38 +489,42 @@ The [`Ansible/harbor_playbook.yml`](file:///home/anwartamasna/terraform_ec2_with
      - Disables heavy optional components (`trivy.enabled: false`, `notary.enabled: false`) to ensure a low memory footprint.
      - Sets default admin credentials (`admin` / `Harbor12345`).
      - Persistent volume claims backed by K3s default `local-path` storage class.
-5. **Readiness Checks**:
+5. **Unified Cluster Deployment**:
+   - Executes Helm deployment once from `k3s_server`; Kubernetes automatically schedules Harbor pods across the control-plane and worker nodes.
+6. **Readiness Checks**:
    - Automatically waits for Harbor Core and Portal pods to reach `Ready` state.
 
 ```bash
 # 1. Validate playbook syntax
 ansible-playbook --syntax-check harbor_playbook.yml
 
-# 2. Deploy Harbor across the webservers cluster
-ansible-playbook harbor_playbook.yml --limit webservers
+# 2. Deploy Harbor onto the unified K3s cluster
+ansible-playbook harbor_playbook.yml
 ```
 
 ##### 🔑 Harbor Dashboard Access & Credentials
 
+Because Harbor is exposed via Kubernetes `NodePort` on port `30002`, it is accessible through **any** cluster node's public IP:
+
 | Service | Protocol / Port | Access URL | Credentials |
 |---|---|---|---|
-| **Harbor Web UI** | `HTTP: 30002` | `http://<WEBSERVER_PUBLIC_IP>:30002` | Username: `admin`<br>Password: `Harbor12345` |
-| **Docker CLI Login** | `HTTP: 30002` | `docker login <WEBSERVER_PUBLIC_IP>:30002` | Username: `admin`<br>Password: `Harbor12345` |
+| **Harbor Web UI** | `HTTP: 30002` | `http://<K3S_NODE_PUBLIC_IP>:30002` | Username: `admin`<br>Password: `Harbor12345` |
+| **Docker CLI Login** | `HTTP: 30002` | `docker login <K3S_NODE_PUBLIC_IP>:30002` | Username: `admin`<br>Password: `Harbor12345` |
 
 > [!TIP]
-> When pushing or pulling from Docker over HTTP without a custom TLS certificate, add the registry to `/etc/docker/daemon.json` under `"insecure-registries": ["<WEBSERVER_PUBLIC_IP>:30002"]` and restart the docker daemon.
+> When pushing or pulling from Docker over HTTP without a custom TLS certificate, add the registry to `/etc/docker/daemon.json` under `"insecure-registries": ["<K3S_NODE_PUBLIC_IP>:30002"]` and restart the docker daemon.
 
 ##### 🔍 Verifying Harbor on Kubernetes
 
 ```bash
-# Check running pods in the harbor namespace
-ansible webservers -b -a "k3s kubectl get pods -n harbor"
+# Check running pods in the harbor namespace across all cluster nodes
+ansible k3s_server -b -a "k3s kubectl get pods -n harbor -o wide"
 
 # Check Harbor services and exposed NodePort
-ansible webservers -b -a "k3s kubectl get svc -n harbor"
+ansible k3s_server -b -a "k3s kubectl get svc -n harbor"
 
 # Inspect PersistentVolumeClaims
-ansible webservers -b -a "k3s kubectl get pvc -n harbor"
+ansible k3s_server -b -a "k3s kubectl get pvc -n harbor"
 ```
 
 ---
