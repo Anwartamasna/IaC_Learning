@@ -1,18 +1,55 @@
-- hosts: webservers
+---
+# ==============================================================================
+# Playbook: Unified Multi-Node K3s Cluster Deployment
+# Architecture: 1 Control-Plane (Server) + 2 Worker Nodes (Agents)
+# ==============================================================================
+
+# 1. System Preparation on all nodes
+- name: Prepare all K3s cluster nodes
+  hosts: k3s_cluster
   become: yes
   tasks:
-    - name: Upgrade all Packages
+    - name: Upgrade all packages
       dnf:
         name: "*"
         state: latest
 
+# 2. Setup K3s Control-Plane (Master Server)
+- name: Setup K3s Control-Plane (Server)
+  hosts: k3s_server
+  become: yes
+  tasks:
+    - name: Ensure /etc/rancher/k3s directory exists
+      file:
+        path: /etc/rancher/k3s
+        state: directory
+        mode: '0755'
 
-    - name: Download and install K3s
-      shell: curl -sfL https://get.k3s.io | sh -
+    - name: Configure K3s server configuration file
+      copy:
+        dest: /etc/rancher/k3s/config.yaml
+        mode: '0644'
+        content: |
+          tls-san:
+            - "{{ inventory_hostname }}"
+            - "{{ ansible_facts['default_ipv4']['address'] }}"
+          node-ip: "{{ ansible_facts['default_ipv4']['address'] }}"
+          advertise-address: "{{ ansible_facts['default_ipv4']['address'] }}"
+          flannel-iface: "{{ ansible_facts['default_ipv4']['interface'] }}"
+      register: server_config
+
+    - name: Download and install K3s server
+      shell: curl -sfL https://get.k3s.io | sh -s - server
       args:
         creates: /usr/local/bin/k3s
 
-    - name: Ensure K3s service is started and enabled
+    - name: Restart K3s server if configuration changed
+      systemd:
+        name: k3s
+        state: restarted
+      when: server_config.changed
+
+    - name: Ensure K3s server service is started and enabled
       systemd:
         name: k3s
         state: started
@@ -21,18 +58,95 @@
     - name: Wait for K3s kubeconfig to be generated
       wait_for:
         path: /etc/rancher/k3s/k3s.yaml
-        timeout: 30
+        timeout: 60
 
     - name: Ensure readable permissions on kubeconfig
       file:
         path: /etc/rancher/k3s/k3s.yaml
         mode: '0644'
 
-    - name: Verify K3s installation
-      command: k3s --version
-      register: k3s_version
+    - name: Wait for K3s node token to be generated
+      wait_for:
+        path: /var/lib/rancher/k3s/server/node-token
+        timeout: 60
+
+    - name: Read K3s node token from master
+      slurp:
+        src: /var/lib/rancher/k3s/server/node-token
+      register: k3s_token_raw
+
+    - name: Set token and server IP facts for agent nodes
+      set_fact:
+        k3s_token: "{{ k3s_token_raw.content | b64decode | trim }}"
+        k3s_server_ip: "{{ ansible_facts['default_ipv4']['address'] }}"
+
+# 3. Setup K3s Worker Nodes (Agents)
+- name: Setup K3s Worker Nodes (Agents)
+  hosts: k3s_agent
+  become: yes
+  tasks:
+    - name: Check if standalone k3s server uninstaller exists
+      stat:
+        path: /usr/local/bin/k3s-uninstall.sh
+      register: k3s_server_uninstall_script
+
+    - name: Check if k3s-agent service is already installed
+      stat:
+        path: /etc/systemd/system/k3s-agent.service
+      register: k3s_agent_service_file
+
+    - name: Uninstall previous standalone K3s server if present and not yet an agent
+      command: /usr/local/bin/k3s-uninstall.sh
+      when: k3s_server_uninstall_script.stat.exists and not k3s_agent_service_file.stat.exists
+
+    - name: Ensure /etc/rancher/k3s directory exists
+      file:
+        path: /etc/rancher/k3s
+        state: directory
+        mode: '0755'
+
+    - name: Download and join K3s cluster as agent
+      shell: >
+        curl -sfL https://get.k3s.io |
+        K3S_URL=https://{{ hostvars[groups['k3s_server'][0]]['k3s_server_ip'] }}:6443
+        K3S_TOKEN={{ hostvars[groups['k3s_server'][0]]['k3s_token'] }}
+        INSTALL_K3S_EXEC="agent --node-ip {{ ansible_facts['default_ipv4']['address'] }} --flannel-iface {{ ansible_facts['default_ipv4']['interface'] }}"
+        sh -s -
+      args:
+        creates: /etc/systemd/system/k3s-agent.service
+
+    - name: Ensure K3s agent service is started and enabled
+      systemd:
+        name: k3s-agent
+        state: started
+        enabled: yes
+
+# 4. Verify Unified Cluster Status from Control-Plane
+- name: Verify K3s Unified Cluster Status
+  hosts: k3s_server
+  become: yes
+  tasks:
+    - name: Wait for all 3 nodes to register in the cluster
+      command: k3s kubectl get nodes --no-headers
+      register: cluster_nodes
+      until: cluster_nodes.stdout_lines | length == 3
+      retries: 30
+      delay: 5
       changed_when: false
 
-    - name: Display K3s version
+    - name: Wait for all nodes to reach Ready state
+      command: k3s kubectl wait --for=condition=Ready nodes --all --timeout=120s
+      changed_when: false
+
+    - name: Label agent nodes with worker role
+      command: k3s kubectl label nodes -l '!node-role.kubernetes.io/control-plane' node-role.kubernetes.io/worker=worker --overwrite
+      changed_when: false
+
+    - name: Retrieve full cluster node details
+      command: k3s kubectl get nodes -o wide
+      register: k3s_nodes_output
+      changed_when: false
+
+    - name: Display Unified K3s Cluster Nodes
       debug:
-        var: k3s_version.stdout
+        msg: "{{ k3s_nodes_output.stdout_lines }}"

@@ -1,9 +1,9 @@
 ---
-- name: Deploy Harbor Registry on Kubernetes (Webservers)
-  hosts: webservers
+# Play 1: System Swap Configuration across all cluster nodes
+- name: Configure Swap on all K3s Cluster Nodes
+  hosts: k3s_cluster
   become: yes
   tasks:
-    # 1. System Swap Configuration
     - name: Check if swapfile exists
       stat:
         path: /swapfile
@@ -37,7 +37,12 @@
         dump: "0"
         state: present
 
-    # 2. Install Helm 3
+# Play 2: Deploy Harbor Registry on the Unified K3s Cluster from Control-Plane
+- name: Deploy Harbor Registry on Unified K3s Cluster
+  hosts: k3s_server
+  become: yes
+  tasks:
+    # 1. Install Helm 3 on Control-Plane
     - name: Check if Helm binary is installed
       stat:
         path: /usr/local/bin/helm
@@ -47,7 +52,7 @@
       shell: curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
       when: not helm_stat.stat.exists
 
-    # 3. Add and Update Harbor Helm Repository
+    # 2. Add and Update Harbor Helm Repository
     - name: Add Harbor Helm repository
       command: helm repo add harbor https://helm.goharbor.io
       environment:
@@ -60,13 +65,13 @@
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
       changed_when: false
 
-    # 4. Copy Harbor custom values from local template
+    # 3. Copy Harbor custom values from local template
     - name: Deploy Harbor values configuration
       template:
         src: templates/harbor-values.yaml.j2
         dest: /tmp/harbor-values.yaml
 
-    # 5. Deploy Harbor via Helm
+    # 4. Deploy Harbor via Helm
     - name: Deploy or upgrade Harbor release
       command: >
         helm upgrade --install harbor harbor/harbor
@@ -78,7 +83,7 @@
       register: helm_install
       changed_when: "'Release \"harbor\" has been upgraded' in helm_install.stdout or 'STATUS: deployed' in helm_install.stdout"
 
-    # 6. Wait for Harbor core and portal pods
+    # 5. Wait for Harbor core and portal pods
     - name: Wait for Harbor Core pod to be ready
       command: k3s kubectl wait --namespace harbor --for=condition=ready pod -l component=core --timeout=300s
       changed_when: false
@@ -87,15 +92,15 @@
       command: k3s kubectl wait --namespace harbor --for=condition=ready pod -l component=portal --timeout=180s
       changed_when: false
 
-    # 7. Verification and Credentials Summary
+    # 6. Verification and Credentials Summary
     - name: Display Harbor access details
       debug:
         msg:
           - "======================================================="
-          - " Harbor Registry deployed successfully on Kubernetes!"
-          - " Node IP:       {{ inventory_hostname }}"
-          - " Web UI URL:    http://{{ inventory_hostname }}:30002"
-          - " Default Admin: admin"
-          - " Password:      Harbor12345"
-          - " Docker Login:  docker login {{ inventory_hostname }}:30002 -u admin -p Harbor12345"
+          - " Harbor Registry deployed successfully on Unified K3s Cluster!"
+          - " Control Plane IP: {{ inventory_hostname }}"
+          - " Web UI URL:       http://{{ inventory_hostname }}:30002"
+          - " Default Admin:    admin"
+          - " Password:         Harbor12345"
+          - " Docker Login:     docker login {{ inventory_hostname }}:30002 -u admin -p Harbor12345"
           - "======================================================="
