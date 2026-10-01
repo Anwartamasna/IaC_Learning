@@ -199,6 +199,11 @@ resource "aws_instance" "CI_CD_server_ec2" {
   key_name               = aws_key_pair.generated_key.key_name
   vpc_security_group_ids = [aws_security_group.ec2_sg.id, aws_security_group.cicd_sg.id]
 
+  root_block_device {
+    volume_size = 30
+    volume_type = "gp3"
+  }
+
   tags = {
     Name = "CI_CD_server_ec2-instance"
   }
