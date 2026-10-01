@@ -75,11 +75,28 @@
         groups: docker
         append: yes
 
+    # 2.1 Install kubectl CLI on CI/CD host
+    - name: Download kubectl binary
+      get_url:
+        url: "https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl"
+        dest: /usr/local/bin/kubectl
+        mode: '0755'
+
     # 3. Jenkins container deployment
     - name: Pull Jenkins LTS Docker image
       command: docker pull jenkins/jenkins:lts
       register: jenkins_pull
       changed_when: "'Downloaded newer image' in jenkins_pull.stdout"
+
+    - name: Check if Jenkins container has docker.sock mounted
+      shell: docker inspect jenkins | grep -q '/var/run/docker.sock'
+      register: jenkins_docker_sock_check
+      failed_when: false
+      changed_when: false
+
+    - name: Remove outdated Jenkins container if docker.sock is not mounted
+      command: docker rm -f jenkins
+      when: jenkins_docker_sock_check.rc != 0
 
     - name: Check if Jenkins container exists
       command: docker ps -a --filter "name=^jenkins$" --format "{{ '{{' }}.Names{{ '}}' }}"
@@ -100,9 +117,13 @@
         docker run -d
         --name jenkins
         --restart unless-stopped
+        -u root
         -p 8080:8080
         -p 50000:50000
         -v jenkins_home:/var/jenkins_home
+        -v /var/run/docker.sock:/var/run/docker.sock
+        -v /usr/bin/docker:/usr/bin/docker
+        -v /usr/local/bin/kubectl:/usr/local/bin/kubectl:ro
         jenkins/jenkins:lts
       when: jenkins_container_check.stdout != "jenkins"
 

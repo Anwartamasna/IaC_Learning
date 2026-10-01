@@ -6,3 +6,4 @@
 # Sensitive credentials and SSH keys
 terraform.tfvars
 *.pem
+*kubeconfig*.yaml
