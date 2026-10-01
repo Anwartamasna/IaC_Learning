@@ -166,6 +166,11 @@ resource "aws_instance" "ec2_instance" {
   key_name               = aws_key_pair.generated_key.key_name
   vpc_security_group_ids = [aws_security_group.ec2_sg.id, aws_security_group.k8s_web_sg.id]
 
+  root_block_device {
+    volume_size = 30
+    volume_type = "gp3"
+  }
+
   tags = {
     Name = "t3-small-ec2-instance"
   }
@@ -177,6 +182,11 @@ resource "aws_instance" "second_ec2" {
   key_name               = aws_key_pair.generated_key.key_name
   vpc_security_group_ids = [aws_security_group.ec2_sg.id, aws_security_group.k8s_web_sg.id]
 
+  root_block_device {
+    volume_size = 30
+    volume_type = "gp3"
+  }
+
   tags = {
     Name = "second-ec2-instance"
   }
@@ -187,6 +197,11 @@ resource "aws_instance" "third_ec2" {
   instance_type          = "t3.small"
   key_name               = aws_key_pair.generated_key.key_name
   vpc_security_group_ids = [aws_security_group.ec2_sg.id, aws_security_group.k8s_web_sg.id]
+
+  root_block_device {
+    volume_size = 30
+    volume_type = "gp3"
+  }
 
   tags = {
     Name = "third-ec2-instance"
