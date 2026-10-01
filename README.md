@@ -49,6 +49,13 @@ flowchart TD
 │   ├── playbook.yml                # Ansible playbook deploying unified 1-master 2-worker K3s cluster
 │   └── templates/
 │       └── harbor-values.yaml.j2   # Jinja2 template for Harbor Helm chart custom values
+├── AI_Analyser/                    # Microservices Application Source & K3s Manifests
+│   ├── k8s/                        # Declarative Kubernetes manifests (00-namespace to 10-ingress)
+│   ├── resumeanalyzer/             # Spring Boot (Java 21) REST API Backend
+│   ├── airesumeanalyser/           # React 18 / Vite Frontend Dashboard
+│   ├── ocr-service/                # Python OCR (PyMuPDF & Tesseract) & Ollama Consumer
+│   ├── Jenkinsfile                 # End-to-end automated Jenkins CI/CD Pipeline
+│   └── README.md                   # 📖 Detailed Application Architecture & K8s Guide
 ├── .gitignore                      # Git ignore file for secrets and state
 ├── main.tf                         # Terraform EC2 instances, key pair, and security groups
 ├── outputs.tf                      # Terraform output definitions (IDs, IPs, SSH commands, web URLs)
@@ -142,6 +149,9 @@ The 3-node K3s cluster hosts the **AI Resume Compatibility Analyzer** microservi
 * **Message Broker (`kafka` & `zookeeper`)**: Apache Kafka event streaming for asynchronous resume analysis requests and responses.
 * **Storage (`minio` & `postgres`)**: MinIO S3-compatible object storage (Console on NodePort `30901`) and PostgreSQL 16 database.
 * **Automated CI/CD**: Dedicated `Jenkinsfile` orchestrating Maven compilation, npm bundling, JUnit & Pytest suites, SonarQube quality gates, Docker Hub packaging, and automated `kubectl set image` rolling deployments.
+
+> 📖 **Comprehensive Application Documentation:**  
+> For the complete microservices breakdown, architecture diagrams, API specifications, Ollama CPU optimization benchmarks, and manual `kubectl` / `deploy-k3s.sh` guides, refer to the [**AI_Analyser README**](AI_Analyser/README.md).
 
 ---
 
