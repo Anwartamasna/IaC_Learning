@@ -81,9 +81,9 @@ flowchart TD
     * **Jenkins Web UI (Port 8080)**: Jenkins web interface.
     * **Jenkins Agent JNLP (Port 50000)**: Inbound Jenkins agent connections.
     * **SonarQube (Port 9000)**: SonarQube code quality dashboard & API.
-* **Compute**:
-  * Deploys 3 `t3.small` EC2 instances for Kubernetes webservers (`ec2_instance`, `second_ec2`, `third_ec2`).
-  * Deploys 1 `t3.small` EC2 instance for the CI/CD server (`CI_CD_server_ec2`).
+* **Compute & Storage**:
+  * Deploys 3 `t3.small` EC2 instances for Kubernetes webservers (`ec2_instance`, `second_ec2`, `third_ec2`), each backed by a **30 GB gp3 EBS root volume** to reliably store container layers, Ollama AI models, and persistent data.
+  * Deploys 1 `t3.small` EC2 instance for the CI/CD server (`CI_CD_server_ec2`), backed by a **30 GB gp3 EBS root volume** to accommodate Jenkins builds, Maven/Node dependencies, SonarQube scanning, and Docker build cache without disk exhaustion.
 
 ### 2. Ansible Integration
 * **`inventory.ini`**:
@@ -132,6 +132,16 @@ flowchart TD
   * Port: `9000` (Web UI & analysis API).
   * Memory limits tuned for JVM stability: `-e SONAR_SEARCH_JAVAADDITIONALOPTS="-Xms256m -Xmx512m"`.
   * Data persistence backed by Docker named volumes: `sonarqube_data`, `sonarqube_extensions`, and `sonarqube_logs`.
+
+### 5. Production Workload: AI Resume Compatibility Analyzer
+The 3-node K3s cluster hosts the **AI Resume Compatibility Analyzer** microservices stack in namespace `ai-resume`:
+* **Frontend (`app-frontend`)**: React 18 & Vite SPA served on port `80` (Traefik Ingress) and NodePort `30080`.
+* **Backend Core (`app-backend`)**: Spring Boot 3.5 (Java 21) handling authentication, file processing, and asynchronous coordination.
+* **OCR Service (`ocr-service`)**: Python 3.9 service leveraging PyMuPDF and Tesseract to extract raw text from candidate CVs.
+* **Local Generative AI (`ollama`)**: In-cluster Ollama instance running `qwen2.5:1.5b` directly on CPU, generating structured ATS scoring and recommendations in ~30s.
+* **Message Broker (`kafka` & `zookeeper`)**: Apache Kafka event streaming for asynchronous resume analysis requests and responses.
+* **Storage (`minio` & `postgres`)**: MinIO S3-compatible object storage (Console on NodePort `30901`) and PostgreSQL 16 database.
+* **Automated CI/CD**: Dedicated `Jenkinsfile` orchestrating Maven compilation, npm bundling, JUnit & Pytest suites, SonarQube quality gates, Docker Hub packaging, and automated `kubectl set image` rolling deployments.
 
 ---
 
